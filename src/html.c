@@ -266,6 +266,12 @@ extern int inlines_to_html(inl* ils, bstring* result)
       bformata(html, "<em>%s</em>", contents->data);
       bdestroy(contents);
       break;
+    case superscript:
+      check(inlines_to_html(ils->content.inlines, &contents) == 0,
+            "error converting inlines to html");
+      bformata(html, "<sup>%s</sup>", contents->data);
+      bdestroy(contents);
+      break;
     }
     ils = ils->next;
   }

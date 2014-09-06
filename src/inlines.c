@@ -142,6 +142,7 @@ inline static inl* make_simple(int t)
 #define make_image(alt, url, title) make_linkable(image, alt, url, title)
 #define make_emph(contents) make_inlines(emph, contents)
 #define make_strong(contents) make_inlines(strong, contents)
+#define make_superscript(contents) make_inlines(superscript, contents)
 
 // Free an inline list.
 extern void free_inlines(inl* e)
@@ -201,6 +202,7 @@ static subject* make_subject(bstring s, reference** refmap)
   e->buffer = s;
   e->pos = 0;
   e->label_nestlevel = 0;
+  e->superscript_nestlevel = 0;
   e->reference_map = refmap;
   return e;
 }
@@ -783,6 +785,117 @@ static inl* handle_left_bracket(subject* subj)
   return make_str(bfromcstr("["));
 }
 
+// Parse a superscript section, ended by a space character or contained
+// in within a set of '()'s. Returns 1 if sucessful.
+// Unless raw_superscr is null, it is set to point to the contents of
+// the superscript.
+// Assumes the subject is positioned just past a '^' character.
+// Returns 0 and does not advance if the superscript group has no matching ')'.
+// Note the precedence:  code backticks have precedence over superscript
+// delimiters, which has precence over links, which have precedence over
+// *, _, and other inline formatting markers. So, 2 below contains superscript
+// while 1 does not:
+// 1. ^(Hello `down)` there
+// 2. ^(Hello *down)* there
+static int superscript_capture(subject* subj, bstring* raw_superscr)
+{
+  int nestlevel = 0;
+  inl* tmp = NULL;
+  bstring raw;
+  int startpos = subj->pos;
+  int grouped = peek_char(subj) == '(';
+  if (grouped && subj->superscript_nestlevel) {
+    subj->superscript_nestlevel--;
+    return 0;
+  }
+  if(grouped)
+    advance(subj);  // advance past (
+
+  char c;
+  while (1) {
+
+    if (!(c = peek_char(subj))) {
+      break;
+    }
+    if (grouped) {
+      // this is this group's closing brace
+      if (c == ')' && nestlevel <= 0)
+        break;
+    } else {
+      if(isspace(c))
+        break;
+    }
+
+    switch (c) {
+    case '`':
+      tmp = handle_backticks(subj);
+      free_inlines(tmp);
+      break;
+    case '<':
+      tmp = handle_pointy_brace(subj);
+      free_inlines(tmp);
+      break;
+    case '[':
+      tmp = handle_left_bracket(subj);
+      free_inlines(tmp);
+      break;
+    case '(':  // nested ()
+      nestlevel++;
+      advance(subj);
+      break;
+    case ')':  // nested ()
+      nestlevel--;
+      advance(subj);
+      break;
+    case '\\':
+      advance(subj);
+      if (ispunct(peek_char(subj))) {
+        advance(subj);
+      }
+      break;
+    default:
+      advance(subj);
+    }
+  }
+  if(grouped) {
+    if (c == ')') {
+      if (raw_superscr != NULL) {
+        raw = bmidstr(subj->buffer, startpos + 1, subj->pos - (startpos + 1));
+        *raw_superscr = raw;
+      }
+      subj->superscript_nestlevel = 0;
+      advance(subj);  // advance past )
+      return 1;
+    } else {
+      if (c == 0) {
+        subj->superscript_nestlevel = nestlevel;
+      }
+      subj->pos = startpos; // rewind
+      return 0;
+    }
+  } else {
+    if(raw_superscr != NULL) {
+      *raw_superscr = bmidstr(subj->buffer, startpos, subj->pos);
+    }
+    return 1;
+  }
+}
+
+// Parse a superscript section, or return a fallback.
+static inl* handle_caret(subject* subj)
+{
+  inl* sup = NULL;
+  bstring raw = NULL;
+
+  int found_superscript = superscript_capture(subj, &raw);
+  if(found_superscript) {
+    sup = parse_inlines(raw, NULL);
+    bdestroy(raw);
+    return make_superscript(sup);
+  }
+  return make_str(bfromcstr("^"));
+}
+
 // Parse a hard or soft linebreak, returning an inline.
 // Assumes the subject has a newline at the current position.
 static inl* handle_newline(subject *subj)
@@ -875,9 +988,17 @@ extern int parse_inline(subject* subj, inl ** last)
         new = make_str(bfromcstr("!"));
       }
       break;
+    case '^':
+      advance(subj);
+      if(peek_char(subj) && !isspace(peek_char(subj))) {
+        new = handle_caret(subj);
+      } else {
+        new = make_str(bfromcstr("^"));
+      }
+      break;
     default:
       // we read until we hit a special character
-      special_chars = bfromcstr("\n\\`&_*[]<!");
+      special_chars = bfromcstr("\n\\`&_*[]<!^");
       endpos = binchr(subj->buffer, subj->pos, special_chars);
       bdestroy(special_chars);
       if (endpos == subj->pos) {

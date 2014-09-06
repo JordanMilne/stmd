@@ -162,6 +162,10 @@ extern void print_inlines(inl* ils, int indent)
       printf("emph\n");
       print_inlines(ils->content.linkable.label, indent + 2);
       break;
+    case superscript:
+      printf("superscript\n");
+      print_inlines(ils->content.inlines, indent + 2);
+      break;
     }
     ils = ils->next;
   }

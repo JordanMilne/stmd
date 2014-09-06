@@ -7,7 +7,7 @@
 
 typedef struct Inline {
   enum { str, softbreak, linebreak, code, raw_html, entity,
-         emph, strong, link, image } tag;
+         emph, strong, link, image, superscript } tag;
   union {
     bstring                  literal;
     struct Inline*           inlines;
@@ -31,6 +31,7 @@ typedef struct Subject {
   int            pos;
   reference**    reference_map;
   int            label_nestlevel;
+  int            superscript_nestlevel;
 } subject;
 
 // Types for blocks
