@@ -108,6 +108,12 @@ static void inlines_to_html(strbuf *html, node_inl* ils)
 				inlines_to_html(html, ils->content.inlines);
 				strbuf_puts(html, "</em>");
 				break;
+
+			case INL_SUPERSCRIPT:
+				strbuf_puts(html, "<sup>");
+				inlines_to_html(html, ils->content.inlines);
+				strbuf_puts(html, "</sup>");
+				break;
 		}
 		ils = ils->next;
 	}

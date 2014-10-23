@@ -83,6 +83,10 @@ static void print_inlines(node_inl* ils, int indent)
 			printf("emph\n");
 			print_inlines(ils->content.linkable.label, indent + 2);
 			break;
+		case INL_SUPERSCRIPT:
+			printf("superscript\n");
+			print_inlines(ils->content.linkable.label, indent + 2);
+			break;
 		}
 		ils = ils->next;
 	}

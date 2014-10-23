@@ -14,6 +14,7 @@ typedef struct Subject {
 	chunk input;
 	int pos;
 	int label_nestlevel;
+	int superscript_nestlevel;
 	reference_map *refmap;
 } subject;
 
@@ -101,6 +102,7 @@ inline static node_inl* make_simple(int t)
 #define make_softbreak() make_simple(INL_SOFTBREAK)
 #define make_emph(contents) make_inlines(INL_EMPH, contents)
 #define make_strong(contents) make_inlines(INL_STRONG, contents)
+#define make_superscript(contents) make_inlines(INL_SUPERSCRIPT, contents)
 
 // Free an inline list.
 extern void free_inlines(node_inl* e)
@@ -124,6 +126,7 @@ extern void free_inlines(node_inl* e)
 				break;
 			case INL_EMPH:
 			case INL_STRONG:
+			case INL_SUPERSCRIPT:
 				free_inlines(e->content.inlines);
 				break;
 			default:
@@ -157,6 +160,7 @@ static void subject_from_buf(subject *e, strbuf *buffer, reference_map *refmap)
 	e->input.alloc = 0;
 	e->pos = 0;
 	e->label_nestlevel = 0;
+	e->superscript_nestlevel = 0;
 	e->refmap = refmap;
 
 	chunk_rtrim(&e->input);
@@ -169,6 +173,7 @@ static void subject_from_chunk(subject *e, chunk *chunk, reference_map *refmap)
 	e->input.alloc = 0;
 	e->pos = 0;
 	e->label_nestlevel = 0;
+	e->superscript_nestlevel = 0;
 	e->refmap = refmap;
 
 	chunk_rtrim(&e->input);
@@ -724,6 +729,112 @@ static node_inl* handle_left_bracket(subject* subj)
 	return make_str(chunk_literal("["));
 }
 
+// Parse a superscript section, ended by a space character or contained
+// in within a set of '()'s. Returns 1 if sucessful.
+// Unless raw_superscr is null, it is set to point to the contents of
+// the superscript.
+// Assumes the subject is positioned just past a '^' character.
+// Returns 0 and does not advance if the superscript group has no matching ')'.
+// Note the precedence:  code backticks have precedence over superscript
+// delimiters, which has precence over links, which have precedence over
+// *, _, and other inline formatting markers. So, 2 below contains superscript
+// while 1 does not:
+// 1. ^(Hello `down)` there
+// 2. ^(Hello *down)* there
+static int superscript_capture(subject* subj, chunk *raw_superscr)
+{
+	int nestlevel = 0;
+	node_inl* tmp = NULL;
+	int startpos = subj->pos;
+	int grouped = peek_char(subj) == '(';
+	if (grouped && subj->superscript_nestlevel) {
+		subj->superscript_nestlevel--;
+		return 0;
+	}
+	if(grouped)
+		advance(subj);	// advance past (
+
+	char c;
+	while (1) {
+
+		if (!(c = peek_char(subj))) {
+			break;
+		}
+		if (grouped) {
+			// this is this group's closing brace
+			if (c == ')' && nestlevel <= 0)
+				break;
+		} else {
+			if(isspace(c))
+				break;
+		}
+
+		switch (c) {
+		case '`':
+			tmp = handle_backticks(subj);
+			free_inlines(tmp);
+			break;
+		case '<':
+			tmp = handle_pointy_brace(subj);
+			free_inlines(tmp);
+			break;
+		case '[':
+			tmp = handle_left_bracket(subj);
+			free_inlines(tmp);
+			break;
+		case '(':	// nested ()
+			nestlevel++;
+			advance(subj);
+			break;
+		case ')':	// nested ()
+			nestlevel--;
+			advance(subj);
+			break;
+		case '\\':
+			advance(subj);
+			if (ispunct(peek_char(subj))) {
+				advance(subj);
+			}
+			break;
+		default:
+			advance(subj);
+		}
+	}
+	if(grouped) {
+		if (c == ')') {
+			if (raw_superscr != NULL) {
+				*raw_superscr = chunk_dup(&subj->input, startpos + 1, subj->pos - (startpos + 1));
+			}
+			subj->superscript_nestlevel = 0;
+			advance(subj);	// advance past )
+			return 1;
+		} else {
+			if (c == 0) {
+				subj->superscript_nestlevel = nestlevel;
+			}
+			subj->pos = startpos; // rewind
+			return 0;
+		}
+	} else {
+		if(raw_superscr != NULL) {
+			*raw_superscr = chunk_dup(&subj->input, startpos, subj->pos);
+		}
+		return 1;
+	}
+}
+
+// Parse a superscript section, or return a fallback.
+static node_inl* handle_caret(subject* subj)
+{
+	chunk raw;
+
+	int found_superscript = superscript_capture(subj, &raw);
+	if(found_superscript) {
+		return make_superscript(parse_chunk_inlines(&raw, subj->refmap));
+	}
+	return make_str(chunk_literal("^"));
+}
+
 // Parse a hard or soft linebreak, returning an inline.
 // Assumes the subject has a newline at the current position.
 static node_inl* handle_newline(subject *subj)
@@ -768,14 +879,14 @@ node_inl *parse_chunk_inlines(chunk *chunk, reference_map *refmap)
 
 static int subject_find_special_char(subject *subj)
 {
-	// "\n\\`&_*[]<!"
+	// "\n\\`&_*[]<!^"
 	static const int8_t SPECIAL_CHARS[256] = {
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
 		1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -844,6 +955,14 @@ static int parse_inline(subject* subj, node_inl ** last)
 			break;
 		case '[':
 			new = handle_left_bracket(subj);
+			break;
+		case '^':
+			advance(subj);
+			if(peek_char(subj) && !isspace(peek_char(subj))) {
+				new = handle_caret(subj);
+			} else {
+				new = make_str(chunk_literal("^"));
+			}
 			break;
 		case '!':
 			advance(subj);

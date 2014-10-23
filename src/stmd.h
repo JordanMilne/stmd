@@ -20,7 +20,8 @@ struct node_inl {
 		INL_EMPH,
 		INL_STRONG,
 		INL_LINK,
-		INL_IMAGE
+		INL_IMAGE,
+		INL_SUPERSCRIPT
 	} tag;
 	union {
 		chunk literal;
